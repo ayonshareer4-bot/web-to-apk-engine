@@ -1,0 +1,187 @@
+name: Auto App Engine Builder
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: 'App Name'
+        required: true
+        default: 'My Web App'
+      web_url:
+        description: 'Website URL'
+        required: true
+        default: 'https://google.com'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v3
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Generate Native Android Project with OneSignal
+        run: |
+          mkdir -p app/src/main/java/com/saas/app
+          mkdir -p app/src/main/res/values
+
+          # Settings Gradle
+          echo "rootProject.name = 'AppBuilder'" > settings.gradle
+          echo "include ':app'" >> settings.gradle
+
+          # Root build.gradle
+          cat << 'EOF' > build.gradle
+          buildscript {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+              dependencies {
+                  classpath 'com.android.tools.build:gradle:8.1.1'
+              }
+          }
+          allprojects {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          EOF
+
+          # App build.gradle
+          cat << 'EOF' > app/build.gradle
+          plugins {
+              id 'com.android.application'
+          }
+          android {
+              namespace 'com.saas.app'
+              compileSdk 34
+              defaultConfig {
+                  applicationId "com.saas.app"
+                  minSdk 21
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.0"
+              }
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                  }
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_1_8
+                  targetCompatibility JavaVersion.VERSION_1_8
+              }
+          }
+          dependencies {
+              implementation 'androidx.appcompat:appcompat:1.6.1'
+              implementation 'com.onesignal:OneSignal:[5.0.0, 5.99.99]'
+          }
+          EOF
+
+          # Strings.xml
+          cat << EOF > app/src/main/res/values/strings.xml
+          <resources>
+              <string name="app_name">${{ github.event.inputs.app_name }}</string>
+          </resources>
+          EOF
+
+          # AndroidManifest.xml
+          cat << 'EOF' > app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <application
+                  android:name=".MainApplication"
+                  android:label="@string/app_name"
+                  android:theme="@style/Theme.AppCompat.Light.NoActionBar">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:configChanges="orientation|screenSize|keyboardHidden">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          # MainApplication.java
+          cat << 'EOF' > app/src/main/java/com/saas/app/MainApplication.java
+          package com.saas.app;
+          import android.app.Application;
+          import com.onesignal.OneSignal;
+          import com.onesignal.debug.LogLevel;
+
+          public class MainApplication extends Application {
+              private static final String ONESIGNAL_APP_ID = "0f4c32c6-8610-48f1-af69-7ed1f013b852";
+
+              @Override
+              public void onCreate() {
+                  super.onCreate();
+                  OneSignal.getDebug().setLogLevel(LogLevel.VERBOSE);
+                  OneSignal.initWithContext(this, ONESIGNAL_APP_ID);
+              }
+          }
+          EOF
+
+          # MainActivity.java
+          cat << 'EOF' > app/src/main/java/com/saas/app/MainActivity.java
+          package com.saas.app;
+          import android.annotation.SuppressLint;
+          import android.os.Bundle;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+          import androidx.appcompat.app.AppCompatActivity;
+
+          public class MainActivity extends AppCompatActivity {
+              private WebView webView;
+              private static final String TARGET_URL = "${{ github.event.inputs.web_url }}";
+
+              @SuppressLint("SetJavaScriptEnabled")
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  webView = new WebView(this);
+                  setContentView(webView);
+                  WebSettings settings = webView.getSettings();
+                  settings.setJavaScriptEnabled(true);
+                  settings.setDomStorageEnabled(true);
+                  webView.setWebViewClient(new WebViewClient());
+                  webView.loadUrl(TARGET_URL);
+              }
+
+              @Override
+              public void onBackPressed() {
+                  if (webView.canGoBack()) {
+                      webView.goBack();
+                  } else {
+                      super.onBackPressed();
+                  }
+              }
+          }
+          EOF
+
+      - name: Setup Gradle
+        uses: gradle/gradle-build-action@v2
+        with:
+          gradle-version: 8.2
+
+      - name: Compile and Build Debug APK
+        run: gradle assembleDebug
+
+      - name: Upload Release Ready APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: App-Ready-To-Download
+          path: app/build/outputs/apk/debug/*.apk
