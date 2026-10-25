@@ -6,15 +6,16 @@ on:
       app_name:
         description: 'App Name'
         required: true
-        default: 'My Web App'
-      web_url:
-        description: 'Website URL'
+        default: 'My HTML App'
+      html_base64:
+        description: 'Base64 HTML'
         required: true
-        default: 'https://google.com'
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout Repo
@@ -26,16 +27,25 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Accept Android SDK Licenses
-        run: |
-          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+      - name: Accept Licenses
+        run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
 
-      - name: Create Native WebView App Project
+      - name: Create Native App Project
         run: |
           mkdir -p app/src/main/java/com/saas/app
           mkdir -p app/src/main/res/values
+          mkdir -p app/src/main/assets
 
-          # Settings Gradle
+          # ইউজার যে HTML পেস্ট করেছে তা অ্যাপের ভেতরে সেভ হবে
+          echo "${{ github.event.inputs.html_base64 }}" | base64 -d > app/src/main/assets/index.html
+
+          # gradle.properties
+          cat << 'EOF' > gradle.properties
+          android.useAndroidX=true
+          android.enableJetifier=true
+          EOF
+
+          # settings.gradle
           cat << 'EOF' > settings.gradle
           pluginManagement {
               repositories {
@@ -55,7 +65,7 @@ jobs:
           include ':app'
           EOF
 
-          # Root build.gradle
+          # build.gradle
           cat << 'EOF' > build.gradle
           buildscript {
               repositories {
@@ -68,7 +78,7 @@ jobs:
           }
           EOF
 
-          # App build.gradle
+          # app/build.gradle
           cat << 'EOF' > app/build.gradle
           plugins {
               id 'com.android.application'
@@ -82,6 +92,10 @@ jobs:
                   targetSdk 34
                   versionCode 1
                   versionName "1.0"
+                  manifestPlaceholders = [
+                      onesignal_app_id: '0f4c32c6-8610-48f1-af69-7ed1f013b852',
+                      onesignal_google_project_number: 'REMOTE'
+                  ]
               }
               buildTypes {
                   release {
@@ -93,6 +107,13 @@ jobs:
               implementation 'androidx.appcompat:appcompat:1.6.1'
               implementation 'com.onesignal:OneSignal:[4.8.0, 4.99.99]'
           }
+          EOF
+
+          # styles.xml
+          cat << 'EOF' > app/src/main/res/values/styles.xml
+          <resources>
+              <style name="AppTheme" parent="Theme.AppCompat.Light.NoActionBar"></style>
+          </resources>
           EOF
 
           # strings.xml
@@ -111,7 +132,7 @@ jobs:
               <application
                   android:name=".MainApplication"
                   android:label="@string/app_name"
-                  android:theme="@style/Theme.AppCompat.Light.NoActionBar">
+                  android:theme="@style/AppTheme">
                   <activity
                       android:name=".MainActivity"
                       android:exported="true">
@@ -124,7 +145,7 @@ jobs:
           </manifest>
           EOF
 
-          # MainApplication.java (OneSignal Push Setup)
+          # MainApplication.java
           cat << 'EOF' > app/src/main/java/com/saas/app/MainApplication.java
           package com.saas.app;
           import android.app.Application;
@@ -142,7 +163,7 @@ jobs:
           }
           EOF
 
-          # MainActivity.java (WebView loading User Target)
+          # MainActivity.java (পেস্ট করা HTML অফলাইন থেকে রান হবে)
           cat << 'EOF' > app/src/main/java/com/saas/app/MainActivity.java
           package com.saas.app;
           import android.annotation.SuppressLint;
@@ -154,7 +175,6 @@ jobs:
 
           public class MainActivity extends AppCompatActivity {
               private WebView webView;
-              private static final String TARGET_URL = "${{ github.event.inputs.web_url }}";
 
               @SuppressLint("SetJavaScriptEnabled")
               @Override
@@ -166,8 +186,9 @@ jobs:
                   settings.setJavaScriptEnabled(true);
                   settings.setDomStorageEnabled(true);
                   settings.setDatabaseEnabled(true);
+                  settings.setAllowFileAccess(true);
                   webView.setWebViewClient(new WebViewClient());
-                  webView.loadUrl(TARGET_URL);
+                  webView.loadUrl("file:///android_asset/index.html");
               }
 
               @Override
@@ -187,10 +208,14 @@ jobs:
           gradle-version: 8.4
 
       - name: Build Debug APK
-        run: gradle assembleDebug
+        run: |
+          gradle assembleDebug
+          mv app/build/outputs/apk/debug/*.apk app/build/outputs/apk/debug/app-release.apk
 
-      - name: Upload Release APK
-        uses: actions/upload-artifact@v4
+      - name: Publish Direct APK Download
+        uses: softprops/action-gh-release@v1
         with:
-          name: ${{ github.event.inputs.app_name }}-APK
-          path: app/build/outputs/apk/debug/*.apk
+          tag_name: build-${{ github.run_id }}
+          files: app/build/outputs/apk/debug/app-release.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
