@@ -6,10 +6,11 @@ on:
       app_name:
         description: 'App Name'
         required: true
-        default: 'My HTML App'
-      html_base64:
-        description: 'Base64 HTML'
+        default: 'My Web App'
+      web_url:
+        description: 'Website URL'
         required: true
+        default: 'https://google.com'
 
 jobs:
   build:
@@ -27,22 +28,23 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Accept Licenses
-        run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
-
-      - name: Create Native App Project
+      - name: Configure Android SDK Path
         run: |
           mkdir -p app/src/main/java/com/saas/app
           mkdir -p app/src/main/res/values
           mkdir -p app/src/main/assets
 
-          # ইউজার যে HTML পেস্ট করেছে তা অ্যাপের ভেতরে সেভ হবে
-          echo "${{ github.event.inputs.html_base64 }}" | base64 -d > app/src/main/assets/index.html
+          # Fix: SDK path location
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          
+          # Accept all licenses
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
 
           # gradle.properties
           cat << 'EOF' > gradle.properties
           android.useAndroidX=true
           android.enableJetifier=true
+          org.gradle.jvmargs=-Xmx2048m
           EOF
 
           # settings.gradle
@@ -65,7 +67,7 @@ jobs:
           include ':app'
           EOF
 
-          # build.gradle
+          # Root build.gradle
           cat << 'EOF' > build.gradle
           buildscript {
               repositories {
@@ -78,18 +80,18 @@ jobs:
           }
           EOF
 
-          # app/build.gradle
+          # App build.gradle (SDK 33 is preinstalled on Ubuntu)
           cat << 'EOF' > app/build.gradle
           plugins {
               id 'com.android.application'
           }
           android {
               namespace 'com.saas.app'
-              compileSdk 34
+              compileSdk 33
               defaultConfig {
                   applicationId "com.saas.app"
                   minSdk 21
-                  targetSdk 34
+                  targetSdk 33
                   versionCode 1
                   versionName "1.0"
                   manifestPlaceholders = [
@@ -145,7 +147,7 @@ jobs:
           </manifest>
           EOF
 
-          # MainApplication.java
+          # MainApplication.java (OneSignal Setup)
           cat << 'EOF' > app/src/main/java/com/saas/app/MainApplication.java
           package com.saas.app;
           import android.app.Application;
@@ -163,7 +165,7 @@ jobs:
           }
           EOF
 
-          # MainActivity.java (পেস্ট করা HTML অফলাইন থেকে রান হবে)
+          # MainActivity.java
           cat << 'EOF' > app/src/main/java/com/saas/app/MainActivity.java
           package com.saas.app;
           import android.annotation.SuppressLint;
@@ -175,6 +177,7 @@ jobs:
 
           public class MainActivity extends AppCompatActivity {
               private WebView webView;
+              private static final String TARGET_URL = "${{ github.event.inputs.web_url }}";
 
               @SuppressLint("SetJavaScriptEnabled")
               @Override
@@ -186,9 +189,8 @@ jobs:
                   settings.setJavaScriptEnabled(true);
                   settings.setDomStorageEnabled(true);
                   settings.setDatabaseEnabled(true);
-                  settings.setAllowFileAccess(true);
                   webView.setWebViewClient(new WebViewClient());
-                  webView.loadUrl("file:///android_asset/index.html");
+                  webView.loadUrl(TARGET_URL);
               }
 
               @Override
@@ -207,15 +209,15 @@ jobs:
         with:
           gradle-version: 8.4
 
-      - name: Build Debug APK
+      - name: Build Working APK
         run: |
           gradle assembleDebug
-          mv app/build/outputs/apk/debug/*.apk app/build/outputs/apk/debug/app-release.apk
+          mv app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/MyApp.apk
 
-      - name: Publish Direct APK Download
+      - name: Create Direct Download Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: build-${{ github.run_id }}
-          files: app/build/outputs/apk/debug/app-release.apk
+          tag_name: v${{ github.run_id }}
+          files: app/build/outputs/apk/debug/MyApp.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
